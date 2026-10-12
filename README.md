@@ -9,6 +9,15 @@ A config-driven Python monitoring system for Rocoto-based HPC workflows with a G
 - **Dead job detection** — alerts on new `DEAD` jobs with MD5 deduplication (no repeated emails for the same failure).
 - **Stall detection** — alerts when no jobs are running/queued/submitting beyond a configurable threshold.
 - **Hung job detection** — optionally checks one or more `RUNNING` task types (`fcst`, `jedivar`, etc.) for stale log files, with optional `cancel_and_reboot` auto-remediation.
+- **Ensemble forecast failure auto-rescue (`ens_fcst_rescue`)** — automatically rescues failed ensemble forecast tasks (`fcst_m*`) in active cycles:
+  - Triggers only when $\le 5$ (configurable via `max_dead_fcst`) dead ensemble forecast tasks are detected in an active cycle.
+  - Submits a lightweight Slurm job (spec from `<task name="prep_ic">` in workflow XML) running [`ens_fcst_rescue.sh`](ens_fcst_rescue.sh).
+  - Preserves the existing `prep_ic/enkf/mem*/mpasout.nc` by renaming it to `bad.mpasout.nc` for debugging.
+  - Copies the pure 1h forecast background `mpasout.*.nc` from the previous cycle to the current cycle's `prep_ic` member directory.
+  - Cleans leftover files in the member's `fcst` directory to avoid corrupted restarts.
+  - Rewinds the dead task via `rocotorewind` so `rocotorun` resubmits it cleanly.
+  - Rescues each `(cycle, fcst_mXXX)` at most once (guaranteed by an `ens_fcst_rescue.done` marker).
+  - Sends alert emails containing the rescue batch job ID, output log path, and saved `bad.mpasout.nc` path.
 - **Zero-conflict per-HPC branches (`status-<MACHINE>`)** — each HPC pushes `<exp>.json` directly to its own dedicated branch `status-<MACHINE>` (`https://raw.githubusercontent.com/<owner>/<repo>/status-<machine>/<exp>.json`) without modifying the working tree or `main` branch.
 - **Three-layer failure detection**:
   1. **healthchecks.io heartbeat** — detects monitor or cluster/scrontab death within ~15 min.
@@ -90,7 +99,38 @@ MACHINE=gaeac7 ./run.sh --dry-run
 MACHINE=gaeac7 ./run.sh custom_exps.yml --dry-run
 ```
 
-### 4. Add to `scrontab`
+### 4. Ensemble Forecast Auto-Rescue Configuration (`ens_fcst_rescue`)
+
+To enable automatic rescue of dead ensemble forecast tasks (`fcst_m*`), add `ens_fcst_rescue:` to the experiment or shared defaults:
+
+```yaml
+experiments:
+  - name: rrfsv2x_enkf
+    expdir: /scratch3/BMC/rtwrfruc/RRFSv2X/NCO_dirs/RRFSv2X/exp/rrfsenkf
+    subject_prefix: rrfsv2x_enkf
+    checks:
+      ens_fcst_rescue:
+        enabled: true
+        max_dead_fcst: 5    # Max dead members in cycle before giving up (default: 5)
+        mem: 64G            # Memory allocated for the rescue copy job (default: 64G)
+```
+
+#### Standalone / Rescue-Only Mode
+If you want to run `run.sh` exclusively for ensemble forecast rescue without writing dashboard `.state` JSON, updating git branches, or sending dead/stall alert emails:
+
+1. Set `rescue_only: true` in `myexps.yml` under `common:` or at the top level:
+   ```yaml
+   common:
+     rescue_only: true
+   ```
+   *(Or disable all other checks with `dead_jobs: enabled: false`, `stall: enabled: false`, `hung_jobs: enabled: false` while keeping `ens_fcst_rescue: enabled: true`).*
+
+2. Run with or without `--dry-run`:
+   ```bash
+   MACHINE=ursa ./run.sh --dry-run
+   ```
+
+### 5. Add to `scrontab`
 
 ```
 #SCRON --partition=cron_c7
@@ -114,6 +154,7 @@ workflow_status/
 ├── myexps.yml                   # Untracked local user config (git-ignored)
 ├── run.sh                       # Thin launcher (uses MACHINE to set Rocoto + pyDAmonitor python3)
 ├── workflow_status.py           # Core monitoring engine (pushes <exp>.json to branch status-<MACHINE>)
+├── ens_fcst_rescue.sh           # Slurm rescue script (copies 1h forecast, cleans dir, rocotorewind)
 ├── docs/                        # GitHub Pages dashboard (reads status-* branches across all HPCs)
 │   └── index.html
 └── .github/
