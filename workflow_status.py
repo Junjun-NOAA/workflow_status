@@ -269,35 +269,18 @@ def send_email(subject: str, body: str, recipients: List[str], dry_run: bool) ->
     if not recipients:
         logging.warning("No recipients configured for alert: %s", subject)
         return
-    sender = recipients[0]
     if dry_run:
-        logging.info("[DRY-RUN] Would send email '%s' (From: %s) to %s", subject, sender, ", ".join(recipients))
+        logging.info("[DRY-RUN] Would send email '%s' to %s", subject, ", ".join(recipients))
         return
     try:
-        cmd = ["mail", "-r", sender, "-s", subject] + recipients
-        res = subprocess.run(
-            cmd,
+        subprocess.run(
+            ["mail", "-s", subject] + recipients,
             input=body,
             text=True,
-            capture_output=True,
             check=False,
             timeout=30,
         )
-        if res.returncode != 0:
-            logging.warning(
-                "mail with '-r %s' failed (exit %d: %s), falling back without -r",
-                sender,
-                res.returncode,
-                res.stderr.strip() if res.stderr else "no stderr",
-            )
-            subprocess.run(
-                ["mail", "-s", subject] + recipients,
-                input=body,
-                text=True,
-                check=False,
-                timeout=30,
-            )
-        logging.info("Sent alert email '%s' (From: %s) to %s", subject, sender, ", ".join(recipients))
+        logging.info("Sent alert email '%s' to %s", subject, ", ".join(recipients))
     except Exception as exc:
         logging.error("Failed to send email '%s': %s", subject, exc)
 
